@@ -101,9 +101,11 @@ http.createServer(async (req, res) => {
     }
 
     // Statiska sidor
-    const page = p === '/' ? 'index.html' : p === '/admin' ? 'admin.html' : p.slice(1);
+    const clean = p.length > 1 ? p.replace(/\/+$/, '') : p;
+    const page = clean === '/' || clean === '/index' ? 'index.html' : clean === '/admin' ? 'admin.html' : clean.slice(1);
     const f = path.join(PUBLIC, path.basename(page));
     if (STATIC[path.extname(f)] && fs.existsSync(f)) { res.writeHead(200, { 'Content-Type': STATIC[path.extname(f)] }); return fs.createReadStream(f).pipe(res); }
+    if (STATIC[path.extname(f)]) console.error('Saknar fil: ' + f + ' (kontrollera att mappen public/ finns i repot)');
     json(res, 404, { error: 'Hittas inte' });
   } catch (e) { json(res, 400, { error: 'Felaktig förfrågan' }); }
 }).listen(PORT, () => console.log(`Ljudarkiv: publik sida http://localhost:${PORT}/  –  admin http://localhost:${PORT}/admin`));
