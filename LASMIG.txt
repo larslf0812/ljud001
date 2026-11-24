@@ -1,0 +1,7 @@
+LJUDARKIV
+Start:  node server.js   (kräver Node.js 18+, inga npm-paket)
+Publik sida (endast visning):  http://localhost:3000/
+Admin (redigera/radera):       http://localhost:3000/admin
+Lägg ljudfiler i mappen audio/. Raderade filer flyttas till audio/raderade/.
+Användare och lösenord: config.json ("users"). BYT lösenordet! Lägg gärna till fler användare.
+Metadata sparas i data/metadata.json. Vid publik drift: kör bakom HTTPS (t.ex. nginx/Caddy).
