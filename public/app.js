@@ -3,6 +3,8 @@ const app = document.getElementById('app');
 const ONLY = ADMIN ? null : new URLSearchParams(location.search).get('fil');
 let uploadMsg = '', files = [], q = '', page = 1, isAdmin = false, editing = null, current = null;
 
+const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('sv-SE') : '';
+const playsText = n => `Spelad ${n || 0} ${n === 1 ? 'gång' : 'gånger'}`;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = t => { t = Math.floor(t || 0); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); };
 const api = async (url, opt = {}) => { const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opt }); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Fel'); return d; };
@@ -63,6 +65,7 @@ function card(f) {
     <div class="main">
       <h2>${esc(f.title || f.file)}</h2>
       <div class="meta">${f.title ? esc(f.file) + '<br>' : ''}${f.author ? 'Upphov: ' + esc(f.author) : ''}${f.author && f.narrator ? ' · ' : ''}${f.narrator ? 'Berättare: ' + esc(f.narrator) : ''}</div>
+      <div class="meta">Tillagd ${esc(fmtDate(f.created))} · <span data-plays>${playsText(f.plays)}</span></div>
       ${f.story ? `<div class="story">${esc(f.story)}</div>` : ''}
       ${link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(link)}</a>` : ''}
       <div class="ctrl">
@@ -85,6 +88,7 @@ function editForm(f, id) {
     <label>Länk (https://…)</label><input data-f="link" value="${esc(f.link)}">
     <label>Liten bild</label>
     <div class="ctrl"><img class="thumb" data-r="preview" ${f.image ? `src="${esc(f.image)}"` : ''} alt=""><input type="file" accept="image/*" data-r="file" style="width:auto"><button data-a="rmimg">Ta bort bild</button></div>
+    <p class="meta">Tillagd ${esc(fmtDate(f.created))} · ${playsText(f.plays)} (kan inte ändras)</p>
     <div class="ctrl"><button class="primary" data-a="save">Spara</button><button data-a="cancel">Avbryt</button></div>
   </div></div>`;
 }
@@ -94,12 +98,19 @@ function bind(f) {
   if (editing === f.file) return bindEdit(f, el);
   const au = el.querySelector('audio'), seek = el.querySelector('[data-a=seek]'), time = el.querySelector('.time');
   const tick = () => { seek.max = au.duration || 0; seek.value = au.currentTime; time.textContent = fmt(au.currentTime) + ' / ' + fmt(au.duration); };
-  au.ontimeupdate = au.onloadedmetadata = tick;
+  let counted = false;
+  const count = async () => {
+    if (counted) return; counted = true;
+    try { const r = await api('/api/played/' + encodeURIComponent(f.file), { method: 'POST' }); f.plays = r.plays; const e = el.querySelector('[data-plays]'); if (e) e.textContent = playsText(r.plays); } catch {}
+  };
+  au.onloadedmetadata = tick;
+  au.ontimeupdate = () => { tick(); if (au.currentTime >= 3) count(); };
+  au.onended = () => { count(); counted = false; };
   au.onplay = () => { if (current && current !== au) current.pause(); current = au; };
   seek.oninput = () => { au.currentTime = seek.value; };
   const act = {
     play: () => au.play(), pause: () => au.pause(),
-    stop: () => { au.pause(); au.currentTime = 0; tick(); },
+    stop: () => { au.pause(); au.currentTime = 0; counted = false; tick(); },
     rew: () => { au.currentTime = Math.max(0, au.currentTime - 10); },
     qr: () => showQR(f),
     edit: () => { editing = f.file; render(); },
