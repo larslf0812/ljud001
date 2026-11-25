@@ -11,14 +11,16 @@ const META = path.join(path.resolve(ROOT, process.env.DATA_DIR || 'data'), 'meta
 const PUBLIC = path.join(ROOT, 'public');
 const PORT = process.env.PORT || cfg.port || 3000;
 const EXT = { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.flac': 'audio/flac', '.opus': 'audio/ogg' };
-const STATIC = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const STATIC = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
+const CACHE = { '.jpg': 1, '.jpeg': 1, '.png': 1, '.webp': 1 };
 if (!Object.keys(cfg.users || {}).length) console.warn('VARNING: inga användare konfigurerade – ingen kan logga in. Sätt ADMIN_USER och ADMIN_PASSWORD.');
+const lastPlay = new Map(), THROTTLE = process.env.PLAY_THROTTLE_MS !== undefined ? +process.env.PLAY_THROTTLE_MS : 10000;
 const sessions = new Map(); // token -> användarnamn
 fs.mkdirSync(TRASH, { recursive: true });
 fs.mkdirSync(path.dirname(META), { recursive: true });
 
 const readMeta = () => { try { return JSON.parse(fs.readFileSync(META, 'utf8')); } catch { return {}; } };
-const writeMeta = m => fs.writeFileSync(META, JSON.stringify(m, null, 2));
+const writeMeta = m => { fs.writeFileSync(META + '.tmp', JSON.stringify(m, null, 2)); fs.renameSync(META + '.tmp', META); };
 const json = (res, code, obj, headers = {}) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(obj)); };
 const body = req => new Promise((ok, no) => { let d = ''; req.on('data', c => { d += c; if (d.length > 1.5e6) { req.destroy(); no(); } }); req.on('end', () => { try { ok(JSON.parse(d || '{}')); } catch { no(); } }); });
 const user = req => { const m = /(?:^|; )sid=([a-f0-9]+)/.exec(req.headers.cookie || ''); return m && sessions.get(m[1]); };
@@ -26,11 +28,17 @@ const safeName = n => { n = path.basename(String(n)); return EXT[path.extname(n)
 const str = (v, max) => String(v || '').slice(0, max);
 
 function listFiles() {
-  const meta = readMeta();
-  return fs.readdirSync(AUDIO, { withFileTypes: true })
+  const meta = readMeta(); let dirty = false;
+  const out = fs.readdirSync(AUDIO, { withFileTypes: true })
     .filter(f => f.isFile() && EXT[path.extname(f.name).toLowerCase()])
-    .map(f => ({ file: f.name, title: '', story: '', author: '', narrator: '', image: '', link: '', ...(meta[f.name] || {}) }))
+    .map(f => {
+      const e = meta[f.name] || (meta[f.name] = {});
+      if (!e.created) { e.created = new Date().toISOString(); dirty = true; } // datum då posten först skapades
+      return { file: f.name, title: '', story: '', author: '', narrator: '', image: '', link: '', plays: 0, ...e };
+    })
     .sort((a, b) => (a.title || a.file).localeCompare(b.title || b.file, 'sv'));
+  if (dirty) writeMeta(meta);
+  return out;
 }
 
 function serveAudio(req, res, name) {
@@ -80,9 +88,20 @@ http.createServer(async (req, res) => {
         req.on('error', () => fail(400, 'Uppladdningen avbröts'));
         req.on('aborted', () => fail(400, 'Uppladdningen avbröts'));
         out.on('error', () => fail(500, 'Kunde inte spara filen'));
-        out.on('finish', () => { if (failed) return; fs.renameSync(tmp, dest); json(res, 200, { ok: true, file: path.basename(dest) }); resolve(); });
+        out.on('finish', () => { if (failed) return; fs.renameSync(tmp, dest); { const mm = readMeta(); mm[path.basename(dest)] = { created: new Date().toISOString(), plays: 0 }; writeMeta(mm); } json(res, 200, { ok: true, file: path.basename(dest) }); resolve(); });
         req.pipe(out);
       });
+    }
+
+    if (p.startsWith('/api/played/') && req.method === 'POST') {
+      const n = safeName(p.slice(12)); if (!n) return json(res, 404, { error: 'Filen finns inte' });
+      const m = readMeta(), e = m[n] || (m[n] = {});
+      const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress, key = ip + '|' + n, now = Date.now();
+      if (!(now - (lastPlay.get(key) || 0) < THROTTLE)) {
+        e.plays = (e.plays || 0) + 1; if (!e.created) e.created = new Date().toISOString();
+        writeMeta(m); lastPlay.set(key, now); if (lastPlay.size > 5000) lastPlay.clear();
+      }
+      return json(res, 200, { plays: e.plays || 0 });
     }
 
     if (p.startsWith('/api/files/') && (req.method === 'PUT' || req.method === 'DELETE')) {
@@ -91,7 +110,7 @@ http.createServer(async (req, res) => {
       if (req.method === 'PUT') {
         const b = await body(req), m = readMeta();
         const img = str(b.image, 400000);
-        m[n] = { title: str(b.title, 200), story: str(b.story, 20000), author: str(b.author, 200), narrator: str(b.narrator, 200), image: img.startsWith('data:image/') ? img : '', link: str(b.link, 500) };
+        m[n] = { ...(m[n] || {}), title: str(b.title, 200), story: str(b.story, 20000), author: str(b.author, 200), narrator: str(b.narrator, 200), image: img.startsWith('data:image/') ? img : '', link: str(b.link, 500) };
         writeMeta(m); return json(res, 200, { ok: true });
       }
       let dest = path.join(TRASH, n);
@@ -104,7 +123,7 @@ http.createServer(async (req, res) => {
     const clean = p.length > 1 ? p.replace(/\/+$/, '') : p;
     const page = clean === '/' || clean === '/index' ? 'index.html' : clean === '/admin' ? 'admin.html' : clean.slice(1);
     const f = path.join(PUBLIC, path.basename(page));
-    if (STATIC[path.extname(f)] && fs.existsSync(f)) { res.writeHead(200, { 'Content-Type': STATIC[path.extname(f)] }); return fs.createReadStream(f).pipe(res); }
+    if (STATIC[path.extname(f)] && fs.existsSync(f)) { res.writeHead(200, { 'Content-Type': STATIC[path.extname(f)], ...(CACHE[path.extname(f)] ? { 'Cache-Control': 'public, max-age=86400' } : {}) }); return fs.createReadStream(f).pipe(res); }
     if (STATIC[path.extname(f)]) console.error('Saknar fil: ' + f + ' (kontrollera att mappen public/ finns i repot)');
     json(res, 404, { error: 'Hittas inte' });
   } catch (e) { json(res, 400, { error: 'Felaktig förfrågan' }); }
