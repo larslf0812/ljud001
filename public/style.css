@@ -20,3 +20,8 @@ button.danger{background:var(--red);color:#fff;border-color:var(--red)}
 .confirm{color:var(--red);font-weight:600}
 .login{max-width:320px;margin:60px auto}.err{color:var(--red)}
 @media(max-width:520px){.card{flex-direction:column}}
+
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
+.modal-box{background:var(--card);border-radius:14px;padding:18px;max-width:420px;width:100%;text-align:center}
+.modal-box h2{margin:0 0 10px;font-size:1.1rem}.modal-box .ctrl{justify-content:center}
+.qr{width:min(280px,100%);margin:0 auto;border-radius:6px;overflow:hidden}.qr svg{display:block;width:100%;height:auto}
