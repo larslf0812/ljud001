@@ -29,3 +29,11 @@ button.danger{background:var(--red);color:#fff;border-color:var(--red)}
 .meter{height:12px;background:var(--line);border-radius:8px;overflow:hidden;margin:14px 0 6px}.meter i{display:block;height:100%;width:0;background:var(--acc);transition:width .08s}
 .rtime{font-size:2rem;font-variant-numeric:tabular-nums;margin:4px 0}
 .recdot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--red);animation:bl 1s infinite}@keyframes bl{50%{opacity:.2}}
+
+/* ---- Bakgrundsbild ---- */
+:root{--panel:rgba(246,244,239,.9)}
+@media(prefers-color-scheme:dark){:root{--panel:rgba(22,22,22,.88)}}
+body{background:#0b1730}
+body::before{content:"";position:fixed;inset:0;z-index:-1;background:linear-gradient(rgba(5,12,30,.15),rgba(5,12,30,.35)),url('/bakgrund.jpg') center 28%/cover no-repeat}
+#app{margin:min(22vh,180px) auto 24px;padding:20px;background:var(--panel);border-radius:18px;box-shadow:0 8px 32px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+@media(max-width:600px){#app{margin:min(18vh,130px) 8px 16px;padding:14px;border-radius:14px}}
