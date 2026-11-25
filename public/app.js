@@ -32,7 +32,7 @@ function render() {
     <header><h1>${ADMIN ? 'Ljudarkiv – redigering' : 'Ljudarkiv'}</h1>
       <div>${ADMIN ? '<a href="/">Publik sida</a> · <button id="logout">Logga ut</button>' : '<a href="/admin">Admin</a>'}</div></header>
     <input id="q" type="search" placeholder="Sök ljudfil, upphovsperson eller berättare…" value="${esc(q)}">
-    ${ADMIN ? `<div class="ctrl"><button class="primary" id="upbtn">⬆ Ladda upp ljudfil</button><input type="file" id="upfile" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.opus" multiple hidden><span class="meta" id="upl">${esc(uploadMsg)}</span></div>` : ''}
+    ${ADMIN ? `<div class="ctrl"><button class="primary" id="upbtn">⬆ Ladda upp ljudfil</button><button id="recbtn">🎙 Spela in</button><input type="file" id="upfile" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.opus" multiple hidden><span class="meta" id="upl">${esc(uploadMsg)}</span></div>` : ''}
     <p class="meta">${list.length} ljudfil(er)${list.length ? ' · <button id="sheet">▦ Skriv ut QR-ark</button>' : ''}</p>
     ${items.map(card).join('') || '<p>Inga ljudfiler hittades.</p>'}
     <div class="pager"><button id="prev" ${page <= 1 ? 'disabled' : ''}>← Föregående</button><span>Sida ${page} av ${pages}</span><button id="next" ${page >= pages ? 'disabled' : ''}>Nästa →</button></div>`;
@@ -45,6 +45,7 @@ function render() {
   if (ADMIN) {
     const inp = document.getElementById('upfile');
     document.getElementById('upbtn').onclick = () => inp.click();
+    document.getElementById('recbtn').onclick = openRecorder;
     inp.onchange = () => { uploadFiles([...inp.files]); inp.value = ''; };
   }
   if (ADMIN) document.getElementById('logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); isAdmin = false; render(); };
@@ -189,13 +190,106 @@ function printSheet(list) {
   if (skipped) alert(skipped + ' fil(er) hoppades över eftersom länken blev för lång för en QR-kod.');
 }
 
+// ---- Spela in ljud med mikrofon (dator eller telefon) och spara som WAV ----
+function encodeWav(samples, rate) {
+  const n = samples.length, dv = new DataView(new ArrayBuffer(44 + n * 2));
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true);
+  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); str(36, 'data'); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) { const s = Math.max(-1, Math.min(1, samples[i])); dv.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+  return new Blob([dv], { type: 'audio/wav' });
+}
+async function blobToWav(blob) {
+  const AC = window.AudioContext || window.webkitAudioContext, ctx = new AC();
+  try {
+    const ab = await blob.arrayBuffer();
+    const dec = await new Promise((ok, no) => ctx.decodeAudioData(ab, ok, no));
+    const RATE = 22050, off = new OfflineAudioContext(1, Math.max(1, Math.ceil(dec.duration * RATE)), RATE);
+    const src = off.createBufferSource(); src.buffer = dec; src.connect(off.destination); src.start();
+    const done = await off.startRendering();
+    return encodeWav(done.getChannelData(0), RATE);
+  } finally { ctx.close && ctx.close().catch(() => {}); }
+}
+
+function openRecorder() {
+  if (!navigator.mediaDevices || !window.MediaRecorder) return alert('Inspelning stöds inte här. Det kräver en modern webbläsare och en HTTPS-adress.');
+  const pad = n => String(n).padStart(2, '0'), d0 = new Date();
+  const defName = `Inspelning ${d0.getFullYear()}-${pad(d0.getMonth() + 1)}-${pad(d0.getDate())} ${pad(d0.getHours())}.${pad(d0.getMinutes())}`;
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div class="modal-box"><h2>🎙 Spela in ljudfil</h2>
+    <label style="text-align:left">Filnamn</label><input id="rn" value="${esc(defName)}">
+    <div class="meter"><i id="rl"></i></div><div class="rtime" id="rt">0:00</div>
+    <div class="meta" id="rmsg">Tryck på Starta och tillåt mikrofonen om webbläsaren frågar.</div>
+    <div id="rprev"></div><div class="ctrl" id="rbtns"></div></div>`;
+  document.body.appendChild(m);
+  const $ = id => m.querySelector('#' + id);
+  let stream, rec, chunks = [], actx, raf, timer, elapsed = 0, last = 0, wav = null;
+
+  const stopMedia = () => { cancelAnimationFrame(raf); clearInterval(timer); if (stream) stream.getTracks().forEach(t => t.stop()); if (actx) { actx.close().catch(() => {}); actx = null; } };
+  const close = () => { stopMedia(); if (rec) { rec.onstop = null; try { if (rec.state !== 'inactive') rec.stop(); } catch {} } m.remove(); };
+  const states = {
+    idle: [['Starta inspelning', 'primary', () => start()], ['Avbryt', '', close]],
+    recording: [['⏸ Pausa', '', () => { rec.pause(); setState('paused'); }], ['⏹ Stoppa', 'primary', () => rec.stop()]],
+    paused: [['▶ Fortsätt', '', () => { rec.resume(); setState('recording'); }], ['⏹ Stoppa', 'primary', () => rec.stop()]],
+    processing: [],
+    review: [['Spara och ladda upp', 'primary', () => save()], ['Spela in igen', '', () => { wav = null; $('rprev').innerHTML = ''; $('rt').textContent = '0:00'; $('rmsg').textContent = ''; setState('idle'); }], ['Avbryt', '', close]],
+    uploading: []
+  };
+  function setState(s) {
+    const box = $('rbtns'); box.innerHTML = '';
+    states[s].forEach(([label, cls, fn]) => { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = fn; box.appendChild(b); });
+    $('rn').disabled = s === 'recording' || s === 'paused' || s === 'processing' || s === 'uploading';
+    box.style.justifyContent = 'center';
+    if (s === 'recording') $('rmsg').innerHTML = '<span class="recdot"></span> Spelar in…'; else if (s === 'paused') $('rmsg').textContent = 'Pausad';
+  }
+  async function start() {
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { $('rmsg').textContent = e.name === 'NotAllowedError' ? 'Mikrofonen är blockerad. Tillåt åtkomst i webbläsaren och försök igen.' : 'Ingen mikrofon hittades (' + e.name + ').'; return; }
+    chunks = []; rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = finish; rec.start(1000);
+    try {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      const an = actx.createAnalyser(); an.fftSize = 512; actx.createMediaStreamSource(stream).connect(an);
+      const buf = new Uint8Array(an.fftSize);
+      const draw = () => { an.getByteTimeDomainData(buf); let pk = 0; for (const v of buf) pk = Math.max(pk, Math.abs(v - 128)); $('rl').style.width = Math.min(100, pk / 128 * 140) + '%'; raf = requestAnimationFrame(draw); };
+      draw();
+    } catch {}
+    elapsed = 0; last = Date.now();
+    timer = setInterval(() => { const n = Date.now(); if (rec.state === 'recording') elapsed += n - last; last = n; $('rt').textContent = fmt(elapsed / 1000); }, 200);
+    setState('recording');
+  }
+  async function finish() {
+    stopMedia(); setState('processing'); $('rmsg').textContent = 'Bearbetar inspelningen…'; $('rl').style.width = '0';
+    try {
+      wav = await blobToWav(new Blob(chunks, { type: rec.mimeType }));
+      $('rprev').innerHTML = `<audio controls src="${URL.createObjectURL(wav)}" style="width:100%;margin:8px 0"></audio>`;
+      $('rmsg').textContent = `Lyssna igenom. Storlek: ${(wav.size / 1048576).toFixed(1)} MB`; setState('review');
+    } catch (e) { $('rmsg').textContent = 'Kunde inte bearbeta inspelningen: ' + e.message; setState('idle'); }
+  }
+  async function save() {
+    const name = ($('rn').value.trim().replace(/[\\/]/g, '_').replace(/\.(wav|mp3)$/i, '') || defName);
+    setState('uploading'); $('rmsg').textContent = 'Laddar upp…';
+    try {
+      const r = await sendOne(new File([wav], name + '.wav', { type: 'audio/wav' }), 'Laddar upp inspelning', t => { $('rmsg').textContent = t; });
+      close(); q = ''; await load();
+      const i = filtered().findIndex(x => x.file === r.file);
+      page = Math.floor(Math.max(0, i) / PER_PAGE) + 1; editing = r.file; render();
+      const el = document.getElementById(idOf({ file: r.file })); if (el) el.scrollIntoView({ block: 'center' });
+      setMsg('✓ Inspelningen är sparad. Fyll i information nedan.');
+    } catch (e) { $('rmsg').textContent = 'Uppladdningen misslyckades: ' + e.message + ' – försök igen.'; setState('review'); }
+  }
+  setState('idle');
+}
+
 const setMsg = m => { uploadMsg = m; const e = document.getElementById('upl'); if (e) e.textContent = m; };
-function sendOne(file, label) {
+function sendOne(file, label, cb) {
   return new Promise((ok, no) => {
     const x = new XMLHttpRequest();
     x.open('POST', '/api/upload?name=' + encodeURIComponent(file.name));
-    x.upload.onprogress = e => { if (e.lengthComputable) setMsg(label + ' ' + Math.round(e.loaded / e.total * 100) + ' %'); };
-    x.onload = () => { let d = {}; try { d = JSON.parse(x.responseText); } catch {} x.status === 200 ? ok() : no(new Error(d.error || 'Fel ' + x.status)); };
+    x.upload.onprogress = e => { if (e.lengthComputable) { const t = label + ' ' + Math.round(e.loaded / e.total * 100) + ' %'; setMsg(t); if (cb) cb(t); } };
+    x.onload = () => { let d = {}; try { d = JSON.parse(x.responseText); } catch {} x.status === 200 ? ok(d) : no(new Error(d.error || 'Fel ' + x.status)); };
     x.onerror = () => no(new Error('Nätverksfel'));
     x.send(file);
   });

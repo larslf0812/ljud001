@@ -25,3 +25,7 @@ button.danger{background:var(--red);color:#fff;border-color:var(--red)}
 .modal-box{background:var(--card);border-radius:14px;padding:18px;max-width:420px;width:100%;text-align:center}
 .modal-box h2{margin:0 0 10px;font-size:1.1rem}.modal-box .ctrl{justify-content:center}
 .qr{width:min(280px,100%);margin:0 auto;border-radius:6px;overflow:hidden}.qr svg{display:block;width:100%;height:auto}
+
+.meter{height:12px;background:var(--line);border-radius:8px;overflow:hidden;margin:14px 0 6px}.meter i{display:block;height:100%;width:0;background:var(--acc);transition:width .08s}
+.rtime{font-size:2rem;font-variant-numeric:tabular-nums;margin:4px 0}
+.recdot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--red);animation:bl 1s infinite}@keyframes bl{50%{opacity:.2}}
