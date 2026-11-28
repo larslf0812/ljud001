@@ -1,7 +1,7 @@
 const ADMIN = window.MODE === 'admin', PER_PAGE = 10;
 const app = document.getElementById('app');
 const ONLY = ADMIN ? null : new URLSearchParams(location.search).get('fil');
-let uploadMsg = '', files = [], q = '', page = 1, isAdmin = false, editing = null, current = null;
+let uploadMsg = '', files = [], q = '', page = 1, isAdmin = false, role = '', view = 'archive', editing = null, current = null;
 
 const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('sv-SE') : '';
 const playsText = n => `Spelad ${n || 0} ${n === 1 ? 'gång' : 'gånger'}`;
@@ -20,6 +20,7 @@ function filtered() {
 
 function render() {
   if (ADMIN && !isAdmin) return renderLogin();
+  if (ADMIN && view === 'system' && role === 'admin') return renderSystem();
   if (ONLY) {
     const one = files.find(x => x.file === ONLY);
     app.innerHTML = `<header><h1>Ljudarkiv</h1><a href="/">← Visa alla ljudfiler</a></header>` + (one ? card(one) : '<p>Ljudfilen hittades inte. Den kan ha tagits bort.</p>');
@@ -32,7 +33,7 @@ function render() {
   const focus = document.activeElement && document.activeElement.id === 'q';
   app.innerHTML = `
     <header><h1>${ADMIN ? 'Ljudarkiv – redigering' : 'Ljudarkiv'}</h1>
-      <div>${ADMIN ? '<a href="/">Publik sida</a> · <button id="logout">Logga ut</button>' : '<a href="/admin">Admin</a>'}</div></header>
+      <div>${ADMIN ? (role === 'admin' ? '<button id="tosys">System</button> · ' : '') + '<a href="/">Publik sida</a> · <button id="logout">Logga ut</button>' : '<a href="/admin">Admin</a>'}</div></header>
     <input id="q" type="search" placeholder="Sök ljudfil, upphovsperson eller berättare…" value="${esc(q)}">
     ${ADMIN ? `<div class="ctrl"><button class="primary" id="upbtn">⬆ Ladda upp ljudfil</button><button id="recbtn">🎙 Spela in</button><input type="file" id="upfile" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.opus" multiple hidden><span class="meta" id="upl">${esc(uploadMsg)}</span></div>` : ''}
     <p class="meta">${list.length} ljudfil(er)${list.length ? ' · <button id="sheet">▦ Skriv ut QR-ark</button>' : ''}</p>
@@ -50,7 +51,8 @@ function render() {
     document.getElementById('recbtn').onclick = openRecorder;
     inp.onchange = () => { uploadFiles([...inp.files]); inp.value = ''; };
   }
-  if (ADMIN) document.getElementById('logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); isAdmin = false; render(); };
+  if (ADMIN) document.getElementById('logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); isAdmin = false; role = ''; view = 'archive'; render(); };
+  const ts = document.getElementById('tosys'); if (ts) ts.onclick = () => { view = 'system'; render(); };
   items.forEach(bind);
 }
 
@@ -315,16 +317,41 @@ async function uploadFiles(list) {
   setMsg(errs.length ? 'Misslyckades – ' + errs.join('; ') : '✓ ' + list.length + ' fil(er) uppladdade');
 }
 
+// ---- System (endast administratör): backup och export ----
+const fmtBytes = n => n == null ? '–' : n > 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' kB';
+const fmtDT = iso => iso ? new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : '–';
+async function renderSystem() {
+  let st; try { st = await api('/api/system/status'); } catch (e) { view = 'archive'; return render(); }
+  const l = st.last, lastTxt = !l ? 'Ingen backup har körts sedan servern startades.' : l.ok ? `Senaste: ${fmtDT(l.at)} (${l.kind === 'auto' ? 'automatisk' : 'manuell'}), ${l.files} filer, ${fmtBytes(l.size)}` : `<span class="err">Senaste backup misslyckades: ${esc(l.error)}</span>`;
+  app.innerHTML = `<header><h1>System</h1><div><button id="back">← Arkivet</button> · <button id="logout">Logga ut</button></div></header>
+    <div class="card"><div class="main"><h2>Säkerhetsbackup</h2>
+      <p class="meta">${lastTxt}<br>${st.auto ? `Automatisk backup varje natt kl. ${String(st.hour).padStart(2, '0')}:00` : 'Automatisk backup är avstängd'} · sparar de ${st.keep} senaste · ledigt utrymme: ${fmtBytes(st.free)}<br>Mapp: ${esc(st.dir)}</p>
+      <div class="ctrl"><button class="primary" id="bk">Skapa backup nu</button><span class="meta" id="bkmsg"></span></div>
+      ${st.backups.map(b => `<div class="ctrl"><span>${esc(b.name)}</span><span class="meta">${fmtBytes(b.size)} · ${fmtDT(b.at)}</span><a href="/api/system/backups/${encodeURIComponent(b.name)}">Ladda ner</a><button data-del="${esc(b.name)}">Radera</button></div>`).join('') || '<p class="meta">Inga backuper ännu.</p>'}
+      <p class="meta">En backup på samma disk skyddar inte om disken försvinner. Ladda ner den och spara en kopia på annan plats.</p></div></div>
+    <div class="card"><div class="main"><h2>Exportera allt material</h2>
+      <p class="meta">En ZIP med en mapp per post (ljud, bild, berättelse, metadata), register.csv, register.json och en index.html som fungerar utan server.</p>
+      <label><input type="checkbox" id="xq" checked style="width:auto"> Ta med QR-kod (SVG) för varje post</label>
+      <label><input type="checkbox" id="xd" style="width:auto"> Ta med raderade filer</label>
+      <div class="ctrl"><a class="btnlike" id="xgo" href="#">Ladda ner export (ZIP)</a></div></div></div>`;
+  const $ = id => document.getElementById(id);
+  $('back').onclick = () => { view = 'archive'; render(); };
+  $('logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); isAdmin = false; role = ''; view = 'archive'; render(); };
+  $('bk').onclick = async () => { $('bk').disabled = true; $('bkmsg').textContent = 'Skapar backup, det kan ta en stund…'; try { await api('/api/system/backup', { method: 'POST' }); } catch (e) { alert(e.message); } renderSystem(); };
+  app.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Radera backupen ' + b.dataset.del + '?')) return; try { await api('/api/system/backups/' + encodeURIComponent(b.dataset.del), { method: 'DELETE' }); } catch (e) { alert(e.message); } renderSystem(); });
+  $('xgo').onclick = e => { e.preventDefault(); location.href = '/api/system/export?qr=' + ($('xq').checked ? 1 : 0) + '&deleted=' + ($('xd').checked ? 1 : 0); };
+}
+
 function renderLogin() {
   app.innerHTML = `<div class="login"><h1>Logga in</h1>
     <label>Användarnamn</label><input id="u" autocomplete="username">
     <label>Lösenord</label><input id="p" type="password" autocomplete="current-password">
     <p class="err" id="err"></p><button class="primary" id="go">Logga in</button> <a href="/">Till publika sidan</a></div>`;
   const go = async () => {
-    try { await api('/api/login', { method: 'POST', body: JSON.stringify({ username: u.value, password: p.value }) }); isAdmin = true; await load(); }
+    try { await api('/api/login', { method: 'POST', body: JSON.stringify({ username: u.value, password: p.value }) }); isAdmin = true; role = (await api('/api/me')).role || ''; await load(); }
     catch (e) { document.getElementById('err').textContent = e.message; }
   };
   document.getElementById('go').onclick = go; p.onkeydown = e => { if (e.key === 'Enter') go(); };
 }
 
-(async () => { isAdmin = (await api('/api/me')).admin; if (!ADMIN || isAdmin) await load(); else render(); })();
+(async () => { const me = await api('/api/me'); isAdmin = me.admin; role = me.role || ''; if (!ADMIN || isAdmin) await load(); else render(); })();
